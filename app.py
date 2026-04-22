@@ -3,10 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 import json
 import faiss
+import traceback
 import os
+from openai import OpenAI
+
 app = FastAPI()
 
-# CORS (important)
+# ✅ CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,75 +18,82 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Root route (VERY IMPORTANT for Render health check)
-@app.get("/")
-def root():
-    return {"status": "ok"}
+# ✅ OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Chat route (LIGHT VERSION for now)
-@app.get("/chat")
-def chat(q: str):
-    return {
-        "response": f"Demo response: {q}"
-    }
-
-
-# ✅ Lazy-loaded globals (prevents crash on Render)
+# ✅ Globals (lazy loading)
 model = None
 index = None
 texts = None
 
 
-# ✅ Load resources only when needed (avoids memory crash at startup)
+# ✅ Root route (Render health check)
+@app.get("/")
+def root():
+    return {"status": "API running 🚀"}
+
+
+# ✅ Load resources safely
 def load_resources():
     global model, index, texts
 
-    if model is None:
-        from sentence_transformers import SentenceTransformer
+    try:
+        if model is None:
+            from sentence_transformers import SentenceTransformer
+            print("🔄 Loading model...")
+            model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
 
-        print("🔄 Loading model...")
-        model = SentenceTransformer("paraphrase-MiniLM-L3-v2")  # lighter model
+        if index is None:
+            print("🔄 Loading FAISS index...")
+            index = faiss.read_index("index.faiss")
 
-        print("🔄 Loading FAISS index...")
-        index = faiss.read_index("index.faiss")
+        if texts is None:
+            print("🔄 Loading texts...")
+            with open("texts.json", "r", encoding="utf-8") as f:
+                texts = json.load(f)
 
-        print("🔄 Loading texts...")
-        with open("texts.json", "r", encoding="utf-8") as f:
-            texts = json.load(f)
+        print("✅ Resources ready!")
 
-        print("✅ All resources loaded!")
+    except Exception:
+        print("❌ RESOURCE LOAD ERROR")
+        traceback.print_exc()
+        raise RuntimeError("Failed to load backend resources")
 
 
-# ✅ Health check route (important for Render)
-@app.get("/")
-def home():
-    return {"status": "API is running 🚀"}
-
-from openai import OpenAI
-import os
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+# ✅ Chat endpoint (HYBRID RAG)
 @app.get("/chat")
 def chat(q: str):
     try:
         load_resources()
 
-        # Embed query
-        q_embed = model.encode([q])
+        # 🔹 Step 1: Embed query
+        try:
+            q_embed = model.encode([q])
+        except Exception:
+            print("❌ EMBEDDING ERROR")
+            traceback.print_exc()
+            return {"response": "Error generating embedding."}
 
-        # FAISS search
-        D, I = index.search(np.array(q_embed).astype("float32"), 3)
-        results = [texts[i] for i in I[0]]
+        # 🔹 Step 2: FAISS search
+        try:
+            D, I = index.search(np.array(q_embed).astype("float32"), 3)
+            results = [texts[i] for i in I[0]]
+        except Exception:
+            print("❌ FAISS ERROR")
+            traceback.print_exc()
+            return {"response": "Error searching knowledge base."}
 
         if not results:
-            return {"response": "No relevant info found."}
+            return {"response": "No relevant information found."}
 
-        context = "\n".join(results)
+        context = "\n\n".join(results)
 
-        # 🔥 OpenAI generation
-        prompt = f"""
-You are a drug discovery expert.
+        # 🔹 Step 3: OpenAI generation
+        try:
+            prompt = f"""
+You are an expert in drug discovery and SAR analysis.
+
+Use the context below to answer the question clearly and concisely.
 
 Context:
 {context}
@@ -91,16 +101,27 @@ Context:
 Question:
 {q}
 
-Answer clearly:
+Answer:
 """
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
-        )
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
+            )
 
-        return {"response": response.choices[0].message.content}
+            answer = response.choices[0].message.content
+            return {"response": answer}
 
-    except Exception as e:
-        return {"response": f"Error: {str(e)}"}
+        except Exception:
+            print("❌ OPENAI ERROR")
+            traceback.print_exc()
+            return {"response": "Error generating AI response."}
+
+    except RuntimeError:
+        return {"response": "Server failed to initialize. Please retry."}
+
+    except Exception:
+        print("❌ UNKNOWN ERROR")
+        traceback.print_exc()
+        return {"response": "Unexpected server error."}
