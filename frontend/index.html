@@ -662,8 +662,9 @@
   ═══════════════════════════════════════════════════════════ */
 
   /* ── Config ─────────────────────────────────────────────── */
-  const API_BASE = "https://fine-tuned-llm-with-rag-prototype.onrender.com/chat";
-  const TIMEOUT_MS  = 90000;   // 90 s per attempt
+//   const API_BASE = "https://fine-tuned-llm-with-rag-prototype.onrender.com/chat";
+  const API_BASE = "http://127.0.0.1:8000/chat";
+  const TIMEOUT_MS  = 50000;   // 50 s per attempt
   const MAX_RETRIES = 1;        // auto-retry once on network failure
 
   /* ── DOM refs ───────────────────────────────────────────── */

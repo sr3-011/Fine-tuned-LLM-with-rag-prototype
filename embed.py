@@ -1,54 +1,67 @@
 """
-embed.py  —  rebuild index.faiss + texts.json using OpenAI embeddings
-Run locally: python embed.py
-Requires:    OPENAI_API_KEY env var set
+embed.py — FINAL SAFE VERSION
+Run: python embed.py
 """
-from openai import OpenAI
+
+from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
 import json
 import os
 
-EMBED_MODEL = "text-embedding-3-small"   # 1536-dim, cheap, fast
-BATCH_SIZE  = 100                        # max items per API call
+MODEL_NAME = "paraphrase-MiniLM-L3-v2"
+MAX_TEXTS = 3000   # keep safe for disk
 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+print("🔄 Loading embedding model...")
+model = SentenceTransformer(MODEL_NAME)
 
-# ── 1. Load dataset ──────────────────────────────────────────────────────────
-print("Loading dataset...")
+# ── Load dataset ─────────────────────────
+print("📂 Loading dataset...")
 texts = []
+
 with open("data.jsonl", "r", encoding="utf-8") as f:
     for line in f:
         data = json.loads(line)
         msgs = data.get("messages", [])
+
         if len(msgs) < 2:
             continue
-        user      = msgs[0]["content"]
+
+        user = msgs[0]["content"]
         assistant = msgs[1]["content"]
+
         texts.append(f"Question: {user}\nAnswer: {assistant}")
 
-print(f"Loaded {len(texts)} entries")
+# limit size (prevents disk error)
+texts = texts[:MAX_TEXTS]
 
-# ── 2. Embed in batches ──────────────────────────────────────────────────────
-print("Creating embeddings via OpenAI...")
-all_embeddings = []
+print(f"✅ Loaded {len(texts)} entries")
 
-for i in range(0, len(texts), BATCH_SIZE):
-    batch = texts[i : i + BATCH_SIZE]
-    resp  = client.embeddings.create(model=EMBED_MODEL, input=batch)
-    vecs  = [item.embedding for item in resp.data]
-    all_embeddings.extend(vecs)
-    print(f"  {min(i + BATCH_SIZE, len(texts))}/{len(texts)} embedded")
+# ── Embeddings ─────────────────────────
+print("🧠 Creating embeddings...")
+embeddings = model.encode(
+    texts,
+    batch_size=32,
+    show_progress_bar=True
+)
 
-embeddings = np.array(all_embeddings, dtype="float32")
+embeddings = np.array(embeddings).astype("float32")
 
-# ── 3. Build & save FAISS index ──────────────────────────────────────────────
-dim   = embeddings.shape[1]           # 1536 for text-embedding-3-small
+# ── FAISS ─────────────────────────
+dim = embeddings.shape[1]
 index = faiss.IndexFlatL2(dim)
 index.add(embeddings)
-faiss.write_index(index, "index.faiss")
 
+# ── Safe save ─────────────────────────
+tmp_file = "index_temp.faiss"
+final_file = "index.faiss"
+
+print("💾 Saving index...")
+faiss.write_index(index, tmp_file)
+os.replace(tmp_file, final_file)
+
+# ── Save texts ─────────────────────────
 with open("texts.json", "w", encoding="utf-8") as f:
-    json.dump(texts, f)
+    json.dump(texts, f, ensure_ascii=False)
 
-print(f"Done — {index.ntotal} vectors saved to index.faiss")
+print("✅ DONE — index + texts saved")
