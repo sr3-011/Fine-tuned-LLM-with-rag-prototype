@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from sentence_transformers import SentenceTransformer
 import numpy as np
 import json
 import faiss
@@ -10,7 +9,8 @@ import os
 import asyncio
 from openai import AsyncOpenAI
 
-model  = None
+EMBED_MODEL = "text-embedding-3-small"   # must match what embed.py used
+
 index  = None
 texts  = None
 client = None
@@ -18,17 +18,13 @@ _ready = False
 
 
 async def _load_assets():
-    global model, index, texts, client, _ready
+    global index, texts, client, _ready
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY env var is not set!")
     client = AsyncOpenAI(api_key=api_key)
     print("OpenAI async client ready")
-
-    print("Loading embedding model...")
-    model = await asyncio.to_thread(SentenceTransformer, "paraphrase-MiniLM-L3-v2")
-    print("Embedding model loaded")
 
     print("Loading FAISS index...")
     index = await asyncio.to_thread(faiss.read_index, "index.faiss")
@@ -45,7 +41,7 @@ async def _load_assets():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(_load_assets())
+    asyncio.create_task(_load_assets())   # port binds immediately
     yield
     print("Shutting down")
 
@@ -70,9 +66,11 @@ def root():
     }
 
 
-def _retrieve(query: str, k: int = 3) -> list:
-    q_embed = model.encode([query])
-    D, I    = index.search(np.array(q_embed).astype("float32"), k)
+async def _retrieve(query: str, k: int = 3) -> list:
+    """Embed the query with OpenAI, then search FAISS — no local model needed."""
+    resp    = await client.embeddings.create(model=EMBED_MODEL, input=[query])
+    q_embed = np.array([resp.data[0].embedding], dtype="float32")
+    D, I    = index.search(q_embed, k)
     return [texts[i] for i in I[0] if 0 <= i < len(texts)]
 
 
@@ -87,7 +85,7 @@ async def chat(q: str):
     q = q.strip()
 
     try:
-        results = await asyncio.to_thread(_retrieve, q)
+        results = await _retrieve(q)
     except Exception:
         traceback.print_exc()
         return {"response": "Error searching the knowledge base. Please retry."}
@@ -117,11 +115,9 @@ async def chat(q: str):
             ),
             timeout=25.0,
         )
-        answer = response.choices[0].message.content.strip()
-        return {"response": answer}
+        return {"response": response.choices[0].message.content.strip()}
 
     except asyncio.TimeoutError:
-        print("OpenAI call timed out after 25 s")
         return {"response": "The AI took too long to respond. Please try again."}
 
     except Exception:
