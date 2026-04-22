@@ -1,14 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sentence_transformers import SentenceTransformer
-import faiss
 import numpy as np
 import json
-import os
+import faiss
 
 app = FastAPI()
 
-# ✅ CORS (for frontend connection)
+# ✅ CORS (VERY IMPORTANT for frontend)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,57 +15,65 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Lazy load model (VERY IMPORTANT for Render)
+# ✅ Lazy-loaded globals (prevents crash on Render)
 model = None
+index = None
+texts = None
 
-def get_model():
-    global model
+
+# ✅ Load resources only when needed (avoids memory crash at startup)
+def load_resources():
+    global model, index, texts
+
     if model is None:
-        print("🔄 Loading embedding model...")
-        model = SentenceTransformer('all-MiniLM-L6-v2')
-        print("✅ Model loaded")
-    return model
+        from sentence_transformers import SentenceTransformer
 
-# ✅ Load FAISS index + texts
-index = faiss.read_index("index.faiss")
+        print("🔄 Loading model...")
+        model = SentenceTransformer("paraphrase-MiniLM-L3-v2")  # lighter model
 
-with open("texts.json", "r", encoding="utf-8") as f:
-    texts = json.load(f)
+        print("🔄 Loading FAISS index...")
+        index = faiss.read_index("index.faiss")
 
-# 🔍 Search function
-def search(query, k=3):
-    model = get_model()
-    q_embed = model.encode([query])
-    D, I = index.search(np.array(q_embed).astype("float32"), k)
-    return [texts[i] for i in I[0]]
+        print("🔄 Loading texts...")
+        with open("texts.json", "r", encoding="utf-8") as f:
+            texts = json.load(f)
 
-# 🤖 Answer function
-def ask(query):
+        print("✅ All resources loaded!")
+
+
+# ✅ Health check route (important for Render)
+@app.get("/")
+def home():
+    return {"status": "API is running 🚀"}
+
+
+# ✅ Chat endpoint
+@app.get("/chat")
+def chat(q: str):
     try:
-        results = search(query)
+        load_resources()
+
+        # Encode query
+        q_embed = model.encode([q])
+
+        # Search in FAISS
+        D, I = index.search(np.array(q_embed).astype("float32"), 3)
+
+        results = [texts[i] for i in I[0]]
 
         if not results:
-            return "No relevant information found."
+            return {"response": "No relevant information found."}
 
         best = results[0]
 
-        # Extract clean answer
+        # Extract answer
         if "Answer:" in best:
-            return best.split("Answer:")[1].strip()
+            answer = best.split("Answer:")[1].strip()
         else:
-            return best
+            answer = best
+
+        return {"response": answer}
 
     except Exception as e:
-        print("❌ Error:", e)
-        return "Something went wrong."
-
-# 🌐 API endpoint
-@app.get("/chat")
-def chat(q: str):
-    return {"response": ask(q)}
-
-# ✅ Required for Render
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+        print("❌ ERROR:", str(e))
+        return {"response": f"Error: {str(e)}"}
