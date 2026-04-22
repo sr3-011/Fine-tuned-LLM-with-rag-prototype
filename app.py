@@ -3,10 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 import json
 import faiss
-
+import os
 app = FastAPI()
 
-# ✅ CORS (VERY IMPORTANT for frontend)
+# CORS (important)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,6 +14,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Root route (VERY IMPORTANT for Render health check)
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+# Chat route (LIGHT VERSION for now)
+@app.get("/chat")
+def chat(q: str):
+    return {
+        "response": f"Demo response: {q}"
+    }
+
 
 # ✅ Lazy-loaded globals (prevents crash on Render)
 model = None
