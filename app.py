@@ -59,34 +59,48 @@ def load_resources():
 def home():
     return {"status": "API is running 🚀"}
 
+from openai import OpenAI
+import os
 
-# ✅ Chat endpoint
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 @app.get("/chat")
 def chat(q: str):
     try:
         load_resources()
 
-        # Encode query
+        # Embed query
         q_embed = model.encode([q])
 
-        # Search in FAISS
+        # FAISS search
         D, I = index.search(np.array(q_embed).astype("float32"), 3)
-
         results = [texts[i] for i in I[0]]
 
         if not results:
-            return {"response": "No relevant information found."}
+            return {"response": "No relevant info found."}
 
-        best = results[0]
+        context = "\n".join(results)
 
-        # Extract answer
-        if "Answer:" in best:
-            answer = best.split("Answer:")[1].strip()
-        else:
-            answer = best
+        # 🔥 OpenAI generation
+        prompt = f"""
+You are a drug discovery expert.
 
-        return {"response": answer}
+Context:
+{context}
+
+Question:
+{q}
+
+Answer clearly:
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+        )
+
+        return {"response": response.choices[0].message.content}
 
     except Exception as e:
-        print("❌ ERROR:", str(e))
         return {"response": f"Error: {str(e)}"}
