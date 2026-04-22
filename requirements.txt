@@ -1,6 +1,6 @@
 openai
 faiss-cpu
 fastapi
-uvicorn
+uvicorn[standard]
 numpy
 sentence-transformers
